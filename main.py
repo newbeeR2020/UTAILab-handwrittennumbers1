@@ -1,69 +1,67 @@
+import streamlit as st
 import torch
 import torch.nn as nn
-import torch.optim as optim
 import torch.nn.functional as F
-from torch.utils.data import DataLoader
+import numpy as np
 import matplotlib.pyplot as plt
+from PIL import Image
 
-# モデルの定義（SimpleMLP）
+# --- モデル定義 ---
 class SimpleMLP(nn.Module):
     def __init__(self):
         super().__init__()
-        self.fc1 = nn.Linear(784, 128)  # input: 784 -> output: 128
-        self.fc2 = nn.Linear(128, 10)   # input: 128 -> output: 10（10クラス分類）
+        self.fc1 = nn.Linear(784, 128)  # 入力: 784 -> 出力: 128
+        self.fc2 = nn.Linear(128, 10)   # 入力: 128 -> 出力: 10（10クラス分類）
 
     def forward(self, x):
-        # バッチサイズに合わせてリシェイプ。x の形状は (batch, 1, 28, 28)
+        # x の形状は (batch, 1, 28, 28) を想定。バッチサイズに合わせてリシェイプ
         x_reshaped = x.view(x.shape[0], -1)  # (batch, 784)
         h = self.fc1(x_reshaped)
         z = torch.sigmoid(h)
         y_hat = self.fc2(z)
         return y_hat
 
-# デバイス設定（GPUがあればGPU、なければCPU）
+# --- デバイス設定 ---
 device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
-print(device)
-
-# 作成したモデルをデバイスへ転送
-model = SimpleMLP().to(device)
-print(model)
 
 # --- モデルのロード ---
 loaded_model = SimpleMLP().to(device)
-
-# FutureWarning の対策として weights_only=True を指定（※環境によっては不要）
+# モデルのパラメータをロード（weights_only=True を指定）
 loaded_model.load_state_dict(torch.load("modelwithBatch.pth", map_location=device, weights_only=True))
-loaded_model.eval()  # 推論モードに切り替え
+loaded_model.eval()  # 推論モードに設定
 
-print("モデルをロードしました。")
+st.title("Digit Classification with SimpleMLP")
+st.write("画像をアップロードして予測を行います。")
 
-# --- DataLoader の作成（ここでは既に train_subset, val_subset がある前提） ---
-batch_size = 64
-val_loader = DataLoader(val_subset, batch_size=batch_size, shuffle=False)
+# --- 画像アップロード ---
+uploaded_file = st.file_uploader("画像ファイルをアップロードしてください（PNG, JPG, JPEG）", type=["png", "jpg", "jpeg"])
 
-# --- 検証データから1枚のテスト画像を取得して予測 ---
-with torch.no_grad():
-    # val_loader から最初のバッチを取得
-    val_batch = next(iter(val_loader))
-    images, labels = val_batch  # images: [batch, 1, 28, 28], labels: [batch]
+if uploaded_file is not None:
+    # 画像を読み込み、グレースケールに変換、28x28 にリサイズ
+    image = Image.open(uploaded_file).convert("L")
+    image = image.resize((28, 28))
+    st.image(image, caption="アップロード画像", use_column_width=False)
 
-    # バッチの先頭の画像をテスト画像として選択
-    test_image = images[0].unsqueeze(0).to(device)  # 形状: [1, 1, 28, 28]
-    true_label = labels[0].item()
+    # PIL Image を NumPy 配列に変換し、正規化（0～1にスケーリング）
+    image_np = np.array(image) / 255.0
+    # テンソルに変換：形状 [1, 28, 28] → [1, 1, 28, 28]
+    image_tensor = torch.tensor(image_np, dtype=torch.float32).unsqueeze(0).unsqueeze(0)
 
-    # モデルに入力して予測
-    output = loaded_model(test_image)  # 出力形状: [1, 10]
-    probabilities = torch.softmax(output, dim=1)  # 各クラスの予測確率
-    _, predicted_class = torch.max(probabilities, 1)
+    # --- 予測処理 ---
+    with torch.no_grad():
+        image_tensor = image_tensor.to(device)
+        output = loaded_model(image_tensor)  # 出力形状: [1, 10]
+        probabilities = torch.softmax(output, dim=1)
+        predicted_class = torch.argmax(probabilities, dim=1).item()
 
-print("正解ラベル:", true_label)
-print("予測されたクラス:", predicted_class.item())
-print("各クラスの確率:", probabilities.cpu().numpy())
+    st.write("**予測されたクラス:**", predicted_class)
+    st.write("**各クラスの確率:**", probabilities.cpu().numpy())
 
-# --- テスト画像の表示 ---
-# test_image の形状は [1, 1, 28, 28] なので、squeeze して [28, 28] に変換
-test_image_disp = test_image.squeeze().cpu().numpy()
-plt.imshow(test_image_disp, cmap='gray')
-plt.title(f"True Label: {true_label}, Predicted: {predicted_class.item()}")
-plt.axis('off')
-plt.show()
+    # --- Matplotlib を用いて画像と予測結果を表示 ---
+    fig, ax = plt.subplots()
+    ax.imshow(image_tensor.squeeze().cpu().numpy(), cmap="gray")
+    ax.set_title(f"Prediction: {predicted_class}")
+    ax.axis("off")
+    st.pyplot(fig)
+else:
+    st.write("画像がアップロードされていません。")
